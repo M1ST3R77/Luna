@@ -67,6 +67,12 @@ jobs:
       - name: Run tests
         run: python .\pymake tests -d
         timeout-minutes: 10
+      - name: Show the executable output when tests fail
+        if: failure()
+        shell: pwsh
+        run: |
+          & .\executable\luna_windows.exe .\tests\test_files\bonjour.test -d 2>&1 | Out-String -Width 200
+          Write-Output "Exit code: $LASTEXITCODE"
       - name: Upload Windows executable as artifact
         uses: actions/upload-artifact@v4
         with:
