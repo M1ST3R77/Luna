@@ -2,7 +2,7 @@ pyinstaller
 speechrecognition
 numpy
 nltk
-tensorflow-cpu
+tensorflow-cpu==2.18.0
 pyaudio
 coverage
 pyttsx3
