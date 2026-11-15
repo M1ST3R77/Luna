@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+
+import platform
+import subprocess
+import sys
+import shutil
+import os
+
+flag_d = 0
+
+def get_os():
+    os_name = platform.system()
+    if os_name == "Linux":
+        return "linux"
+    elif os_name == "Windows":
+        return "windows"
+    else:
+        raise Exception(f"Unsupported OS: {os_name}")
+
+
+def silent_run(command, show_output=0, shell=False):
+    if show_output == 0:
+        with open(os.devnull, 'w') as devnull:
+            return subprocess.run(command, stdout=devnull,
+                        stderr=devnull, shell=shell, check=True)
+    else:
+        return subprocess.run(command, shell=shell, check=True)
+
+
+def create_env(os_type):
+    venv_path = os.path.join(os.getcwd(), "venv")
+
+    if not os.path.exists(venv_path):
+        print("Creating virtual environment...")
+        silent_run([sys.executable, "-m", "venv", "venv"], show_output=flag_d)
+
+    if os_type == "windows":
+        activate_venv = os.path.join(venv_path, "Scripts", "activate")
+        activate_cmd = f"{venv_path}\\Scripts\\activate && "
+    else:
+        activate_venv = os.path.join(venv_path, "bin", "activate")
+        activate_cmd = f"source {venv_path}/bin/activate && "
+
+    if not os.path.exists(activate_venv):
+        print("Error: Virtual environment not set up correctly.")
+        sys.exit(1)
+
+    print(f"Activating virtual environment at {activate_venv}...")
+    return activate_cmd
+
+
+def install_python_dependencies(venv):
+    try:
+        silent_run(["pip", "--version"], show_output=flag_d)
+        silent_run(venv + "pip install -r docker/requirements.txt", show_output=flag_d, shell=True)
+        print("Dependencies installed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error installing dependencies: {e}")
+        sys.exit(1)
+
+
+def docker_exists(name, type):
+    if type == 1:
+        result = subprocess.run(
+            ["docker", "images", "-q", name], stdout=subprocess.PIPE, text=True)
+    else:
+        result = subprocess.run(["docker", "ps", "-q", "-a", "--filter",
+                                f"name={name}"], stdout=subprocess.PIPE, text=True)
+    return bool(result.stdout.strip())
+
+
+def is_installed(util):
+    try:
+        subprocess.run([util, "--version"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        return False
+
+
+def usage():
+    print("Usage: pymake [rule] [-d]")
+    print("Rules: ")
+    print("  [Nothing]  - Build the program and create executable")
+    print("  clean      - Remove Docker container or build folder")
+    print("  fclean     - Remove Docker container, image, volume for linux and executable")
+    print("  re         - Rebuild (fclean + build)")
+    print("  tests      - Run tests")
+    print("  coverage   - Open the coverage html page")
+    print("  doc_auto   - Update python code documentation and create documentation page")
+    print("  doc        - Open the documentation page")
+    print("  -d         Debug mode to see all messages")
+
+
+def build(os_type):
+    if os_type == "linux":
+        if not is_installed("docker"):
+            print(
+                "Docker is not installed or not running. Please install Docker and try again.")
+            sys.exit(1)
+        if not docker_exists("luna_docker", 1):
+            print("Building Docker image...")
+            silent_run(["docker", "build", "-t", "luna_docker",
+                       "-f", "./docker/Dockerfile", "."], show_output=flag_d)
+        print("Running Docker container for Linux to create the executable...")
+        silent_run(["docker", "run", "--name",
+                   "luna_container", "luna_docker"], show_output=flag_d)
+        silent_run(["docker", "cp", "luna_container:/app/dist/luna_linux",
+                   "./executable/luna_linux"], show_output=flag_d)
+        print("Executable created successfully for Linux.")
+    elif os_type == "windows":
+        if not is_installed("python"):
+            print("Python is not installed. Please install Python and try again.")
+            sys.exit(1)
+        print("Checking and installing dependencies...")
+        venv = create_env(os_type)
+        install_python_dependencies(venv)
+        print("Creating Windows executable using PyInstaller...")
+        try:
+            silent_run(
+                venv + "pyinstaller --hidden-import=pycountry --hidden-import=babel --hidden-import=requests --hidden-import=geopy --hidden-import=bs4 --hidden-import=groq --add-data \"src/commands/*;commands\" --add-data \"src/utils/*;utils\" --onefile --name luna_windows --distpath ./executable src/main.py", show_output=flag_d, shell=True)
+            if os.path.exists("./executable/luna_windows.exe"):
+                print("Executable created successfully for Windows in ./executable.")
+            else:
+                print("Error: Executable not found in ./executable.")
+        except subprocess.CalledProcessError as e:
+            print(f"Error creating executable: {e}")
+            sys.exit(1)
+    else:
+        print("Pymake only works on Windows and Linux")
+
+
+def clean(os_type):
+    if os_type == "linux":
+        if docker_exists("luna_container", 2):
+            print("Removing Docker container luna_container...")
+            silent_run(["docker", "rm", "luna_container"], show_output=flag_d)
+        else:
+            print("Docker container already cleaned")
+    elif os_type == "windows":
+        print("Cleaning useless folders...")
+        try:
+            silent_run(["rmdir", "/S", "/Q", "build"], show_output=flag_d, shell=True)
+            silent_run(["del", "*.spec"], show_output=flag_d, shell=True)
+            print("Clean completed successfully.")
+        except Exception as e:
+            print(f"Error during clean: {e}")
+    else:
+        print("Pymake only works on Windows and Linux")
+
+
+def fclean(os_type):
+    if os_type not in ["linux", "windows"]:
+        print("Pymake only works on Windows and Linux")
+    else:
+        clean(os_type)
+        if os_type == "linux":
+            print("Pruning Docker system...")
+            silent_run(["docker", "system", "prune", "-a", "-f"], show_output=flag_d)
+        print(f"Removing {os_type} executable...")
+        try:
+            exec_path = "./executable/luna_" + os_type + \
+                (".exe" if os_type == "windows" else "")
+            os.remove(exec_path)
+            print("Executable removed successfully.")
+        except FileNotFoundError:
+            print("Executable not found, nothing to remove.")
+        except Exception as e:
+            print(f"Error during fclean: {e}")
+
+
+def re(os_type):
+    fclean(os_type)
+    build(os_type)
+
+
+def tests(os_type):
+    if os_type == "linux":
+        PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+        COVERAGE_DIR = os.path.join(PROJECT_ROOT, "docs", "reports", "coverage")
+        os.makedirs(os.path.join(PROJECT_ROOT, "docs", "reports", "test_reports"), exist_ok=True)
+        if os.path.exists(COVERAGE_DIR):
+            shutil.rmtree(COVERAGE_DIR)
+        os.makedirs(COVERAGE_DIR, exist_ok=True)
+        try:
+            res = silent_run(["docker", "run", "-i", "--name",
+                "luna_tests", "luna_docker", "python", "./tests/run_tests.py", "-d" if flag_d == 1 else ""], show_output=flag_d)
+            silent_run(["docker", "cp", "luna_tests:/app/docs/reports/test_reports/.",
+                "./docs/reports/test_reports"], show_output=flag_d)
+            silent_run(["docker", "cp", "luna_tests:/app/docs/reports/coverage/.",
+                "./docs/reports/coverage"], show_output=flag_d)
+            if res.returncode == 0:
+                print("All tests passed.")
+                sys.exit(0)
+            elif res.returncode == 84:
+                print("One or more tests have failed.")
+                sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            silent_run(["docker", "cp", "luna_tests:/app/docs/reports/test_reports/.",
+                "./docs/reports/test_reports"], show_output=flag_d)
+            silent_run(["docker", "cp", "luna_tests:/app/docs/reports/coverage/.",
+                "./docs/reports/coverage"], show_output=flag_d)
+            if docker_exists("luna_tests", 2):
+                silent_run(["docker", "rm", "luna_tests"])
+            if e.returncode == 84:
+                print("One or more tests have failed.")
+                sys.exit(1)
+            else:
+                print("Unknown error during test execution.")
+                sys.exit(2)
+        if docker_exists("luna_tests", 2):
+            silent_run(["docker", "rm", "luna_tests"])
+        if res.returncode == 0:
+            print("All tests passed.")
+            sys.exit(0)
+        elif res.returncode == 84:
+            print("One or more tests have failed.")
+            sys.exit(1)
+    elif os_type == "windows":
+        venv = "./venv/Scripts/"
+        if not os.path.exists(venv):
+            print("Virtual environment not initialized")
+            sys.exit(1)
+        cmd = [venv + "python", "./tests/run_tests.py"]
+        if flag_d == 1:
+            cmd.append("-d")
+        try:
+            result = silent_run(cmd, show_output=flag_d)
+            if result.returncode == 0:
+                print("All tests passed.")
+                sys.exit(0)
+            elif result.returncode == 84:
+                print("One or more tests have failed.")
+                sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            if e.returncode == 84:
+                print("One or more tests have failed.")
+                sys.exit(1)
+            else:
+                print("Unknown error during test execution.")
+                sys.exit(2)
+    else:
+        print("Pymake only works on Windows and Linux")
+        sys.exit(1)
+
+
+def coverage(os_type):
+    coverage_html = "./docs/reports/coverage/index.html"
+    if not os.path.exists(coverage_html):
+        print("Coverage has not been launched, start pymake tests first.")
+        sys.exit(1)
+    if os_type == "linux":
+        silent_run(["xdg-open", coverage_html], show_output=flag_d)
+    elif os_type == "windows":
+        silent_run(["cmd", "/c", "start", coverage_html], show_output=flag_d)
+    else:
+        print("Pymake only works on Windows and Linux")
+
+
+def doc_build_auto(os_type):
+    if not is_installed("python"):
+        print("Python is not installed. Please install Python and try again.")
+        sys.exit(1)
+    print("Checking and installing the dependency...")
+    venv = create_env(os_type)
+    try:
+        import sphinx
+    except ModuleNotFoundError:
+        print("Installation of sphinx in progress.")
+        silent_run(venv + "pip install sphinx", show_output=flag_d, shell=True)
+        silent_run(venv + "pip install sphinx-rtd-theme", show_output=flag_d, shell=True)
+        import sphinx
+    print("Creating documentation...")
+    venv_path = os.path.join(os.getcwd(), "venv")
+    file_script = "Scripts" if os_type == "windows" else "bin"
+    sphinx_apidoc = os.path.join(venv_path, file_script, "sphinx-apidoc")
+    silent_run(sphinx_apidoc + " -f -o docs/documentation/technical_documentation/modules/src src", show_output=flag_d, shell=True)
+    silent_run(sphinx_apidoc + " -f -o docs/documentation/technical_documentation/modules/tests tests", show_output=flag_d, shell=True)
+    if os_type == "linux":
+        silent_run("cd docs/documentation && make html", show_output=flag_d, shell=True)
+        print("Documentation successfully created.")
+    elif os_type == "windows":
+        silent_run([r"docs\documentation\make.bat", "html"], show_output=flag_d, shell=True)
+        print("Documentation successfully created.")
+    else:
+        print("Pymake only works on Windows and Linux")
+
+
+def doc(os_type):
+    doc_html = "./docs/documentation/_build/html/index.html"
+    if not os.path.exists(doc_html):
+        print("Documentation has not been built or founded, start pymake doc_auto first.")
+        sys.exit(1)
+    if os_type == "linux":
+        silent_run(["xdg-open", doc_html], show_output=flag_d)
+    elif os_type == "windows":
+        silent_run(["cmd", "/c", "start", doc_html], show_output=flag_d)
+    else:
+        print("Pymake only works on Windows and Linux")
+
+
+if __name__ == "__main__":
+
+    if sys.argv[len(sys.argv) - 1] == "-d":
+        flag_d = 1
+
+    if len(sys.argv) == 2 and (sys.argv[1] == "--help" or sys.argv[1] == "-help" or sys.argv[1] == "-h"):
+        usage()
+        sys.exit(0)
+
+    os_type = get_os()
+
+    if len(sys.argv) == 1 + flag_d:
+        build(os_type)
+    elif len(sys.argv) == 2 + flag_d:
+        rule = sys.argv[1]
+        if rule == "clean":
+            clean(os_type)
+        elif rule == "fclean":
+            fclean(os_type)
+        elif rule == "re":
+            re(os_type)
+        elif rule == "tests":
+            tests(os_type)
+        elif rule == "coverage":
+            coverage(os_type)
+        elif rule == "doc_auto":
+            doc_build_auto(os_type)
+        elif rule == "doc":
+            doc(os_type)
+        else:
+            print("Incorrect use of pymake, check function with pymake --help")
+            sys.exit(84)
+    else:
+        print("Incorrect use of pymake, check function with pymake --help")
+        sys.exit(84)

@@ -1,0 +1,23 @@
+# Folders
+venv
+dist
+build
+files
+__pycache__
+coverage
+test_reports
+
+
+# Files
+luna_linux
+luna_windows.exe
+*.spec
+docs/documentation/_build/*
+docs/documentation/_static/*
+docs/documentation/_templates/*
+
+
+# Keep
+!docs/documentation/_build/.gitkeep
+!docs/documentation/_static/.gitkeep
+!docs/documentation/_templates/.gitkeep
